@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thumbwalk"
+version = "0.1.0"
+description = "A Gymnasium environment where the agent is the viewer, not the recommender: it navigates a YouTube-style thumbnail feed by clicking related items or marking them not interested, walking a k-NN graph over image embeddings."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "carlitoselmago" }]
+dependencies = [
+    "gymnasium>=0.29",
+    "numpy>=1.24",
+    "scikit-learn>=1.3",
+    "scikit-image>=0.21",
+    "matplotlib>=3.7",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+clip = ["open_clip_torch>=2.20", "torch>=2.0"]
+resnet = ["torch>=2.0", "torchvision>=0.15"]
+umap = ["umap-learn>=0.5"]
+hdbscan = ["hdbscan>=0.8"]
+faiss = ["faiss-cpu>=1.7"]
+all = [
+    "open_clip_torch>=2.20",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "umap-learn>=0.5",
+    "hdbscan>=0.8",
+    "faiss-cpu>=1.7",
+]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["thumbwalk*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

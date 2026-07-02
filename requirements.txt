@@ -1,0 +1,30 @@
+# Core requirements — the environment, recommender, click models, and tests
+# run with only these installed.
+gymnasium>=0.29
+numpy>=1.24
+scikit-learn>=1.3
+scikit-image>=0.21
+matplotlib>=3.7
+pillow>=10.0
+
+# --- Optional extras for scripts/preprocess.py ---
+# Only imported behind try/except; the core package works without them.
+#
+# CLIP embedder (preferred if available):
+#   open_clip_torch>=2.20
+#   torch>=2.0
+#
+# ResNet embedder fallback:
+#   torchvision>=0.15
+#
+# Better 2D projections in analysis outputs (falls back to t-SNE):
+#   umap-learn>=0.5
+#
+# Density-based clustering with outlier detection (-1 label):
+#   hdbscan>=0.8
+#
+# Faster nearest-neighbor index for large corpora (falls back to sklearn):
+#   faiss-cpu>=1.7
+#
+# Test runner:
+#   pytest>=7.4
