@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "thumbwalk"
 version = "0.1.0"
-description = "A Gymnasium environment where the agent is the viewer, not the recommender: it navigates a YouTube-style thumbnail feed by clicking related items or marking them not interested, walking a k-NN graph over image embeddings."
+description = "A Gymnasium environment where the agent is the viewer, not the recommender: it navigates a YouTube-style thumbnail feed by watching related items (with a watch-time fraction) or marking them 'not interested' / 'don't recommend channel', walking a popularity- and profile-driven k-NN graph over image embeddings."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"

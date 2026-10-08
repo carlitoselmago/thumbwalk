@@ -1,14 +1,16 @@
 #!/usr/bin/env python
-"""Run a random-clicking VIEWER agent against ThumbwalkEnv and print its trajectory.
+"""Run a random-acting VIEWER agent against ThumbwalkEnv and print its trajectory.
 
     python examples/random_agent.py                      # in-memory synthetic corpus
     python examples/random_agent.py --corpus-dir corpus/  # a real preprocessed corpus
 
 This is a smoke test / usage example, not a baseline worth learning from: the
-agent samples actions uniformly at random from ``Discrete(2 * slate_size)``,
-so roughly half its actions click a slate item and half mark one "not
-interested". Watch the printed trajectory to see the seed wander the
-k-NN graph and the masked-item count grow as dislikes accumulate.
+agent samples actions uniformly at random from ``Discrete(5 * slate_size)``,
+so on average 3/5 of its actions watch a slate item (with one of three
+symbolic watch times) and 2/5 mark one with negative feedback ("Not Interested" or "Don't recommend channel"). 
+Watch the printed trajectory to see the
+seed wander the k-NN/profile graph and the masked-item count grow as
+negative feedback accumulates.
 """
 
 from __future__ import annotations
@@ -40,6 +42,11 @@ def build_demo_corpus(seed: int = 0) -> Corpus:
     )
     n = points.shape[0]
 
+    # Group every 3 consecutive items into one "channel" so "No recomendar
+    # canal" has more than a single item to suppress at once.
+    channels = [f"channel_{i // 3:03d}" for i in range(n)]
+    popularity = rng.uniform(0.1, 1.0, size=n).astype(np.float64)
+
     return Corpus(
         embeddings=points.astype(np.float32),
         ids=[f"item_{i:04d}" for i in range(n)],
@@ -66,13 +73,21 @@ def build_demo_corpus(seed: int = 0) -> Corpus:
             "source_dir": "in-memory",
             "image_extensions": [],
         },
+        channels=channels,
+        popularity=popularity,
     )
 
 
 def describe_action(action: int, slate_size: int) -> str:
-    if action < slate_size:
-        return f"click(slate[{action}])"
-    return f"not_interested(slate[{action - slate_size}])"
+    action_type, position = divmod(action, slate_size)
+    labels = {
+        0: "watch(abandon)",
+        1: "watch(half)",
+        2: "watch(full)",
+        3: "not_interested",
+        4: "no_channel",
+    }
+    return f"{labels[action_type]}(slate[{position}])"
 
 
 def run_episode(env: ThumbwalkEnv, seed: int) -> None:
@@ -86,8 +101,8 @@ def run_episode(env: ThumbwalkEnv, seed: int) -> None:
         obs, reward, terminated, truncated, info = env.step(action)
         step += 1
         print(
-            f"step {step:2d}  {describe_action(action, slate_size):<24s} "
-            f"-> clicked={info['clicked_id']!s:<12} "
+            f"step {step:2d}  {describe_action(action, slate_size):<22s} "
+            f"-> watched={info['clicked_id']!s:<12} "
             f"masked={info['masked_count']:3d}  cluster={info['current_cluster']}  "
             f"reward={reward:.2f}  invalid={info['invalid_action']}"
         )

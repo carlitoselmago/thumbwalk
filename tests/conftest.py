@@ -66,6 +66,11 @@ def build_synthetic_corpus(seed: int = FIXTURE_SEED) -> Corpus:
 
     ids = [f"item_{i:04d}" for i in range(n_items)]
     paths = [f"/fake/item_{i:04d}.jpg" for i in range(n_items)]
+    # A handful of multi-item "channels" (groups of consecutive rows) plus
+    # some singleton channels, so channel-scoped suppression ("No recomendar
+    # canal") has something non-trivial to exercise in tests.
+    channels = [f"channel_{i // 4:03d}" for i in range(n_items)]
+    popularity = rng.uniform(0.1, 1.0, size=n_items).astype(np.float64)
 
     complexity = {
         "entropy": rng.uniform(2.0, 8.0, size=n_items).astype(np.float32),
@@ -97,6 +102,8 @@ def build_synthetic_corpus(seed: int = FIXTURE_SEED) -> Corpus:
         hdbscan_labels=hdbscan_labels,
         complexity=complexity,
         manifest=manifest,
+        channels=channels,
+        popularity=popularity,
     )
 
 

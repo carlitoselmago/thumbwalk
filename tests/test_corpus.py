@@ -48,3 +48,36 @@ def test_load_round_trip(tmp_path) -> None:
     np.testing.assert_array_equal(loaded.kmeans_labels.shape, (n_items,))
     np.testing.assert_array_equal(loaded.hdbscan_labels.shape, (n_items,))
     assert set(loaded.complexity.keys()) == {"entropy", "jpeg_ratio", "edge_density"}
+    assert len(loaded.channels) == n_items
+    assert loaded.popularity.shape == (n_items,)
+
+
+def test_channels_default_to_one_per_item_when_absent() -> None:
+    corpus = Corpus(
+        embeddings=np.random.default_rng(0).normal(size=(5, 4)).astype(np.float32),
+        ids=[f"item_{i}" for i in range(5)],
+        paths=[f"/fake/{i}.jpg" for i in range(5)],
+        kmeans_labels=np.zeros(5, dtype=int),
+        hdbscan_labels=np.zeros(5, dtype=int),
+        complexity={},
+        manifest={},
+    )
+    assert corpus.channels == corpus.ids
+    assert corpus.n_channels == 5
+    np.testing.assert_array_equal(corpus.popularity, np.ones(5))
+
+
+def test_rows_of_channel_groups_shared_channel() -> None:
+    corpus = Corpus(
+        embeddings=np.random.default_rng(0).normal(size=(4, 4)).astype(np.float32),
+        ids=[f"item_{i}" for i in range(4)],
+        paths=[f"/fake/{i}.jpg" for i in range(4)],
+        kmeans_labels=np.zeros(4, dtype=int),
+        hdbscan_labels=np.zeros(4, dtype=int),
+        complexity={},
+        manifest={},
+        channels=["a", "b", "a", "b"],
+    )
+    np.testing.assert_array_equal(corpus.rows_of_channel("a"), np.array([0, 2]))
+    np.testing.assert_array_equal(corpus.rows_of_channel("b"), np.array([1, 3]))
+    assert corpus.n_channels == 2

@@ -60,6 +60,27 @@ def discover_images(input_dir: Path) -> list[Path]:
     return paths
 
 
+def infer_channels(image_paths: list[Path], input_dir: Path) -> list[str]:
+    """Channel id for each image: its top-level subfolder under ``input_dir``.
+
+    Mirrors how the thumbnail datasets used in the TFM are laid out (one
+    folder per YouTube channel, e.g. a dedicated MrBeast folder as "the
+    account with the most followers on the platform" next to a general
+    folder for variety). Images directly under ``input_dir`` (no subfolder)
+    each get their own singleton channel id, matching
+    :class:`thumbwalk.corpus.Corpus`'s default when no channel metadata is
+    available at all.
+    """
+    channels = []
+    for path in image_paths:
+        relative = path.relative_to(input_dir)
+        if len(relative.parts) > 1:
+            channels.append(relative.parts[0])
+        else:
+            channels.append(f"__singleton__/{relative.stem}")
+    return channels
+
+
 def load_rgb(path: Path) -> Image.Image:
     with Image.open(path) as img:
         return img.convert("RGB")
@@ -480,6 +501,13 @@ def build_corpus(
 
     ids = [f"item_{i:06d}" for i in range(len(image_paths))]
     paths = [str(p) for p in image_paths]
+    channels = infer_channels(image_paths, input_dir)
+    # No real view-count/popularity signal is available from a folder of
+    # images alone, so popularity defaults to uniform. Pass a real signal in
+    # (e.g. via a sidecar CSV merged in later) if the dataset carries one;
+    # Corpus.candidate_generation()'s cold-start sampling is a no-op until
+    # then (uniform weights == uniform sampling).
+    popularity = np.ones(len(image_paths), dtype=np.float64)
 
     n_outliers = int((hdbscan_labels == -1).sum())
     manifest = {
@@ -493,6 +521,7 @@ def build_corpus(
         "kmeans_silhouette": silhouette,
         "hdbscan_params": hdbscan_params,
         "hdbscan_outlier_fraction": n_outliers / len(image_paths),
+        "n_channels": len(set(channels)),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_dir": str(input_dir),
         "image_extensions": sorted(IMAGE_EXTENSIONS),
@@ -506,6 +535,8 @@ def build_corpus(
         hdbscan_labels=hdbscan_labels,
         complexity=complexity,
         manifest=manifest,
+        channels=channels,
+        popularity=popularity,
     )
     return corpus, images
 
