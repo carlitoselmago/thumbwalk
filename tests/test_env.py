@@ -28,6 +28,21 @@ def test_observation_and_action_space_shapes(synthetic_corpus: Corpus) -> None:
     assert env.observation_space.contains(obs)
 
 
+def test_default_reward_is_minus_one_without_a_pick_zero_with_one(
+    synthetic_corpus: Corpus,
+) -> None:
+    config = ThumbwalkEnvConfig(slate_size=5, k=10, horizon=5, exploration_slots=0)
+    env = ThumbwalkEnv(synthetic_corpus, config)
+    env.reset(seed=0, options={"start_row": 0})
+
+    _, reward, *_ = env.step(ACTION_NOT_INTERESTED * config.slate_size + 0)
+    assert reward == -1.0
+
+    env.reset(seed=0, options={"start_row": 0})
+    _, reward, *_ = env.step(ACTION_WATCH_FULL * config.slate_size + 0)
+    assert reward == 0.0
+
+
 def test_watch_action_updates_seed_and_history(synthetic_corpus: Corpus) -> None:
     config = ThumbwalkEnvConfig(slate_size=5, k=10, horizon=5, exploration_slots=0)
     env = ThumbwalkEnv(synthetic_corpus, config)
@@ -155,3 +170,83 @@ def test_cold_start_first_slate_has_no_history(synthetic_corpus: Corpus) -> None
     env = ThumbwalkEnv(synthetic_corpus, config)
     obs, info = env.reset(seed=0)
     assert info["history_length"] == 0
+
+
+def test_max_suggestions_truncates_when_nothing_is_picked(synthetic_corpus: Corpus) -> None:
+    config = ThumbwalkEnvConfig(
+        slate_size=5, k=5, horizon=50, exploration_slots=0, max_suggestions=15,
+    )
+    env = ThumbwalkEnv(synthetic_corpus, config)
+    obs, info = env.reset(seed=0, options={"start_row": 0})
+    assert info["suggestions_shown_since_watch"] == 5
+
+    action = ACTION_NOT_INTERESTED * config.slate_size + 0
+    truncated = False
+    for expected_count in (10, 15, 15):
+        obs, reward, terminated, truncated, info = env.step(action)
+        assert info["suggestions_shown_since_watch"] == expected_count
+    assert truncated is True
+    assert info["suggestions_exhausted"] is True
+
+
+def test_max_suggestions_continuation_avoids_repeating_shown_items(
+    synthetic_corpus: Corpus,
+) -> None:
+    config = ThumbwalkEnvConfig(
+        slate_size=5, k=5, horizon=50, exploration_slots=0, max_suggestions=25,
+    )
+    env = ThumbwalkEnv(synthetic_corpus, config)
+    obs, info = env.reset(seed=0, options={"start_row": 0})
+    first_slate = set(int(r) for r in obs["slate_ids"] if r != -1)
+
+    action = ACTION_NOT_INTERESTED * config.slate_size + 0
+    obs2, *_ = env.step(action)
+    second_slate = set(int(r) for r in obs2["slate_ids"] if r != -1)
+
+    assert first_slate.isdisjoint(second_slate)
+
+
+def test_watching_resets_the_max_suggestions_budget(synthetic_corpus: Corpus) -> None:
+    config = ThumbwalkEnvConfig(
+        slate_size=5, k=5, horizon=50, exploration_slots=0, max_suggestions=10,
+    )
+    env = ThumbwalkEnv(synthetic_corpus, config)
+    obs, info = env.reset(seed=0, options={"start_row": 0})
+
+    obs, reward, terminated, truncated, info = env.step(
+        ACTION_NOT_INTERESTED * config.slate_size + 0
+    )
+    assert info["suggestions_shown_since_watch"] == 10
+    assert truncated is False
+
+    clicked_row = int(obs["slate_ids"][1])
+    action = ACTION_WATCH_FULL * config.slate_size + 1
+    obs, reward, terminated, truncated, info = env.step(action)
+    assert int(obs["seed_id"][0]) == clicked_row
+    assert info["suggestions_shown_since_watch"] == 5
+    assert truncated is False
+
+    # The budget was reset by the watch, so one more scroll must not exhaust it.
+    obs, reward, terminated, truncated, info = env.step(
+        ACTION_NOT_INTERESTED * config.slate_size + 0
+    )
+    assert info["suggestions_shown_since_watch"] == 10
+    assert truncated is False
+
+
+def test_max_suggestions_defaults_to_four_full_slates(synthetic_corpus: Corpus) -> None:
+    config = ThumbwalkEnvConfig(slate_size=5, k=5, horizon=10, exploration_slots=0)
+    env = ThumbwalkEnv(synthetic_corpus, config)
+    assert env.max_suggestions == config.slate_size * 4  # == 20
+
+    env.reset(seed=0, options={"start_row": 0})
+    action = ACTION_NOT_INTERESTED * config.slate_size + 0
+
+    # 3 more full slates (15 more items) exactly reach the 20-item cap...
+    for _ in range(3):
+        _, _, _, truncated, _ = env.step(action)
+        assert truncated is False
+    # ...and the 4th no-pick step finds the budget already spent.
+    _, _, _, truncated, info = env.step(action)
+    assert truncated is True
+    assert info["suggestions_exhausted"] is True

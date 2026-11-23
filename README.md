@@ -134,10 +134,11 @@ obs, info = env.reset(seed=0)
 obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
 ```
 
-`thumbwalk` ships **no** reward logic of its own beyond a `0.0` placeholder — `reward_fn` is
-required for anything but the placeholder, by design, so the environment stays useful for
-whatever your research actually needs to measure (entropy/diversity, engagement, regret,
-fairness...).
+`thumbwalk` ships a thin, generic placeholder reward (`0.0` on watch, `-1.0`
+otherwise) — not tied to any research metric — so the environment is
+minimally sane to run out of the box; `reward_fn` lets you override it with
+whatever your research actually needs to measure (entropy/diversity,
+engagement, regret, fairness...).
 
 ## Action space
 

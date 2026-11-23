@@ -33,6 +33,23 @@ lengthen episodes. Negative-feedback actions are, for the same reason, an
 *alternative* to watching rather than a separate pre-step: each mark
 consumes one of the episode's fixed number of decisions, exactly like a
 watch action, so marking has a real opportunity cost.
+
+Lazy-loaded continuation slates (``ThumbwalkEnvConfig.max_suggestions``):
+whenever the viewer's action is NOT a watch (i.e. ``j = 3`` or ``j = 4``,
+a negative-feedback mark that leaves the seed unchanged), nothing was
+selected to play. Rather than reusing the same seed/profile to produce an
+identical slate forever, the environment mimics YouTube's infinite-scroll
+feed: it serves a fresh continuation slate for the *same* seed/profile
+(same topic, since the seed/history did not change) that excludes every
+item already shown since the last watch, so scrolling further always
+surfaces new suggestions instead of repeats. ``max_suggestions`` caps the
+total number of individual items (not slates) shown for one seed across
+that whole scroll session, counting the slate already on screen; left at
+its default (``None``), it resolves to ``slate_size * 4`` — i.e. always
+exactly 4 full slates of lazy-loaded suggestions before giving up,
+regardless of ``slate_size``. Once that many items have been shown and
+the viewer still hasn't watched anything, the episode ends as
+``truncated`` (the simulated viewer gave up scrolling).
 """
 
 from __future__ import annotations
@@ -65,9 +82,16 @@ N_ACTION_TYPES = 5
 RewardFn = Callable[[dict[str, Any]], float]
 
 
-def _zero_reward(_context: dict[str, Any]) -> float:
-    """Default reward: always 0. Supply your own ``reward_fn`` for real research."""
-    return 0.0
+def _default_reward(context: dict[str, Any]) -> float:
+    """Default reward: ``0.0`` when the viewer watches a video, ``-1.0`` otherwise.
+
+    A thin, generic placeholder — not tied to any research metric — so the
+    environment is still minimally sane to run out of the box: picking
+    nothing to play (a negative-feedback mark, or an invalid click) is
+    worse than picking something. Supply your own ``reward_fn`` for real
+    research.
+    """
+    return 0.0 if context["is_watch"] else -1.0
 
 
 @dataclass
@@ -78,6 +102,14 @@ class ThumbwalkEnvConfig:
     with ``k`` the slate position (``0 .. slate_size-1``) and ``j`` the
     action type (see module docstring: 0/1/2 = watch abandon/half/full,
     3 = "Not interested", 4 = "Don't recommend channel").
+
+    ``max_suggestions`` bounds the total number of individual suggested
+    items (module docstring), not slates, shown for one seed before the
+    viewer watches something. ``None`` (default) resolves, in
+    :meth:`ThumbwalkEnv.__init__`, to ``slate_size * 4`` (always 4 full
+    slates' worth, whatever ``slate_size`` is); pass an explicit int to
+    override. Once the cap is hit without a watch, the episode ends with
+    ``truncated=True``.
     """
 
     slate_size: int = 10
@@ -96,7 +128,8 @@ class ThumbwalkEnvConfig:
     horizon: int = 50
     seed: Optional[int] = None
     terminate_on_starvation: bool = False
-    reward_fn: RewardFn = field(default=_zero_reward)
+    max_suggestions: Optional[int] = None
+    reward_fn: RewardFn = field(default=_default_reward)
 
 
 class ThumbwalkEnv(gym.Env):
@@ -161,6 +194,18 @@ class ThumbwalkEnv(gym.Env):
         self._current_seed_row: int = 0
         self._current_slate: np.ndarray = np.full(n_slots, -1, dtype=int)
         self._history: list[HistoryEntry] = []
+        #: Rows shown in any slate for the current seed since the last
+        #: watch (including the one on screen), excluded from the next
+        #: continuation so lazy loading always surfaces new items, and
+        #: counted against ``max_suggestions`` (see module docstring).
+        self._shown_rows_since_watch: set[int] = set()
+        #: Resolved cap on total items shown per seed before giving up.
+        #: ``None`` in config means "always exactly 4 full slates".
+        self.max_suggestions: int = (
+            self.config.max_suggestions
+            if self.config.max_suggestions is not None
+            else n_slots * 4
+        )
 
     # -- gymnasium API -----------------------------------------------------
 
@@ -172,6 +217,7 @@ class ThumbwalkEnv(gym.Env):
         self.funnel.reset_suppression()
         self._step_count = 0
         self._history = []
+        self._shown_rows_since_watch = set()
 
         options = options or {}
         if "start_row" in options:
@@ -188,6 +234,9 @@ class ThumbwalkEnv(gym.Env):
             )
 
         self._rebuild_slate()
+        self._shown_rows_since_watch = {
+            int(r) for r in self._current_slate if int(r) != -1
+        }
         obs = self._get_obs()
         info = self._get_info(clicked_id=None, action=None, invalid=False, context=None)
         return obs, info
@@ -228,7 +277,28 @@ class ThumbwalkEnv(gym.Env):
         # gets its impression counter bumped, regardless of action type.
         self.funnel.record_impressions(self._current_slate, watched_row)
 
-        self._rebuild_slate()
+        picked_video = is_watch and not invalid
+        suggestions_exhausted = False
+        if picked_video:
+            # New seed: a fresh scroll session starts, with its own budget
+            # of lazy-loaded continuation items.
+            self._shown_rows_since_watch = set()
+        else:
+            # Nothing was selected to play this step (a negative-feedback
+            # mark, or an invalid click on a padding slot): the slate
+            # already on screen was already counted (in reset()/the
+            # previous step), so just check whether its budget is spent.
+            suggestions_exhausted = len(self._shown_rows_since_watch) >= self.max_suggestions
+
+        if suggestions_exhausted:
+            # Lazy-load budget spent on this seed with nothing picked: stop
+            # serving new slates, same as a viewer who gives up scrolling.
+            pass
+        else:
+            self._rebuild_slate(banned_rows=self._shown_rows_since_watch)
+            self._shown_rows_since_watch.update(
+                int(r) for r in self._current_slate if int(r) != -1
+            )
         self._step_count += 1
 
         context = {
@@ -243,6 +313,7 @@ class ThumbwalkEnv(gym.Env):
             "is_no_channel": bool(is_no_channel and not invalid),
             "invalid_action": invalid,
             "masked_count": len(self.funnel.suppressed_rows()),
+            "suggestions_exhausted": suggestions_exhausted,
         }
         reward = self.config.reward_fn(context)
 
@@ -251,7 +322,7 @@ class ThumbwalkEnv(gym.Env):
             pool = self.funnel.candidate_generation(self._history, set())
             terminated = len(pool) < n_slots
 
-        truncated = self._step_count >= self.config.horizon
+        truncated = suggestions_exhausted or self._step_count >= self.config.horizon
 
         obs = self._get_obs()
         info = self._get_info(clicked_id=clicked_id, action=action, invalid=invalid, context=context)
@@ -259,8 +330,10 @@ class ThumbwalkEnv(gym.Env):
 
     # -- helpers -------------------------------------------------------------
 
-    def _rebuild_slate(self) -> None:
-        candidates = self.funnel.candidate_generation(self._history, banned_rows=set())
+    def _rebuild_slate(self, banned_rows: Optional[set[int]] = None) -> None:
+        candidates = self.funnel.candidate_generation(
+            self._history, banned_rows=banned_rows if banned_rows is not None else set()
+        )
         self._current_slate = self.funnel.rank(
             self._history, candidates, self.config.slate_size
         )
@@ -310,4 +383,6 @@ class ThumbwalkEnv(gym.Env):
             "action_type": None if context is None else context["action_type"],
             "watch_fraction": None if context is None else context["watch_fraction"],
             "invalid_action": invalid,
+            "suggestions_shown_since_watch": len(self._shown_rows_since_watch),
+            "suggestions_exhausted": False if context is None else context["suggestions_exhausted"],
         }
