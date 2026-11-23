@@ -14,13 +14,13 @@ discrete actions, encoding a position ``k`` in the slate and a type ``j``:
 
   - ``j = 0, 1, 2``: WATCH slate item ``k``, with one of three symbolic
     watch times — abandon, half, full. The watched item becomes the new
-    seed/profile entry; the recommender uses the watch fraction as an
-    implicit relevance signal (Covington et al. 2016).
+    current video/profile entry; the recommender uses the watch fraction
+    as an implicit relevance signal (Covington et al. 2016).
   - ``j = 3``: "Not interested" on slate item ``k`` — explicit negative
-    feedback. The current seed does NOT change; the recommender
+    feedback. The current video does NOT change; the recommender
     down-weights items similar to ``k`` (~11% drop, Ricks & McCrosky 2022).
   - ``j = 4``: "Don't recommend channel" on slate item ``k`` — explicit
-    negative feedback, channel-scoped. The current seed does NOT change;
+    negative feedback, channel-scoped. The current video does NOT change;
     the recommender down-weights ``k``'s whole channel (~43% drop).
 
 The action index is ``a = j * slate_size + k`` (``Discrete(5 * slate_size)``
@@ -36,17 +36,17 @@ watch action, so marking has a real opportunity cost.
 
 Lazy-loaded continuation slates (``ThumbwalkEnvConfig.max_suggestions``):
 whenever the viewer's action is NOT a watch (i.e. ``j = 3`` or ``j = 4``,
-a negative-feedback mark that leaves the seed unchanged), nothing was
-selected to play. Rather than reusing the same seed/profile to produce an
-identical slate forever, the environment mimics YouTube's infinite-scroll
-feed: it serves a fresh continuation slate for the *same* seed/profile
-(same topic, since the seed/history did not change) that excludes every
+a negative-feedback mark that leaves the current video unchanged), nothing
+was selected to play. Rather than reusing the same video/profile to produce
+an identical slate forever, the environment mimics YouTube's infinite-scroll
+feed: it serves a fresh continuation slate for the *same* video/profile
+(same topic, since the video/history did not change) that excludes every
 item already shown since the last watch, so scrolling further always
 surfaces new suggestions instead of repeats. ``max_suggestions`` caps the
-total number of individual items (not slates) shown for one seed across
-that whole scroll session, counting the slate already on screen; left at
-its default (``None``), it resolves to ``slate_size * 4`` — i.e. always
-exactly 4 full slates of lazy-loaded suggestions before giving up,
+total number of individual items (not slates) shown for one current video
+across that whole scroll session, counting the slate already on screen;
+left at its default (``None``), it resolves to ``slate_size * 4`` — i.e.
+always exactly 4 full slates of lazy-loaded suggestions before giving up,
 regardless of ``slate_size``. Once that many items have been shown and
 the viewer still hasn't watched anything, the episode ends as
 ``truncated`` (the simulated viewer gave up scrolling).
@@ -76,7 +76,7 @@ ACTION_NO_CHANNEL = 4
 N_ACTION_TYPES = 5
 
 #: Called once per step with a context dict, must return a scalar reward.
-#: Context keys: seed_id_before, action, action_type, position, clicked_id,
+#: Context keys: video_id_before, action, action_type, position, clicked_id,
 #: watch_fraction, is_watch, is_not_interested, is_no_channel,
 #: invalid_action, masked_count.
 RewardFn = Callable[[dict[str, Any]], float]
@@ -104,8 +104,8 @@ class ThumbwalkEnvConfig:
     3 = "Not interested", 4 = "Don't recommend channel").
 
     ``max_suggestions`` bounds the total number of individual suggested
-    items (module docstring), not slates, shown for one seed before the
-    viewer watches something. ``None`` (default) resolves, in
+    items (module docstring), not slates, shown for one current video before
+    the viewer watches something. ``None`` (default) resolves, in
     :meth:`ThumbwalkEnv.__init__`, to ``slate_size * 4`` (always 4 full
     slates' worth, whatever ``slate_size`` is); pass an explicit int to
     override. Once the cap is hit without a watch, the episode ends with
@@ -136,16 +136,38 @@ class ThumbwalkEnv(gym.Env):
     """A viewer navigating a feed of thumbnails produced by a fixed recommender.
 
     Observation (``Dict``):
-        - ``seed_embedding``: float32 ``(D,)`` — embedding of the current seed item
+        - ``video_embedding``: float32 ``(D,)`` — embedding of the current video
           (the most recently watched item; before the first watch, the cold-start
           starting item).
-        - ``seed_id``: int64 ``(1,)`` — corpus row index of the current seed.
+        - ``video_id``: int64 ``(1,)`` — corpus row index of the current video.
         - ``slate_embeddings``: float32 ``(N, D)`` — embeddings of the current slate.
         - ``slate_ids``: int64 ``(N,)`` — corpus row indices of the slate (-1 = padding).
         - ``slate_mask``: float32 ``(N,)`` — 1.0 for real slate items, 0.0 for padding.
+        - ``slates_used_frac``: float32 ``(1,)`` in ``[0, 1]`` — how much of the
+          current scroll session's lazy-load budget (``max_suggestions``) has been
+          spent since the last watch, i.e. ``len(shown so far) / max_suggestions``.
+          Without this, a memoryless policy has NO way to perceive "I've scrolled a
+          lot without picking anything, I'm about to get cut off" — ``info`` carries
+          the raw count (``suggestions_shown_since_watch``) but ``info`` is never fed
+          to a policy network, only ``obs`` is. ``1.0`` means the next non-watch
+          step truncates the episode.
 
     Image paths and string ids are NOT part of the observation (so the env
     stays usable headless); they are surfaced in ``info`` for renderers.
+
+    ``reset(options=...)`` accepts:
+        - ``start_row`` (int): anchor the episode's current video at this
+          corpus row instead of a popularity-weighted cold start. Alone,
+          this only changes the exposed *current video*; the slate is
+          still built cold (no history yet), i.e. from popularity, same as
+          no options at all.
+        - ``start_history`` (list of ``(row, watch_fraction)``): makes this
+          a CONTINUATION reset instead of a cold start -- the slate is
+          built from this history's profile embedding (an actual
+          neighborhood), not from popularity. Suppression/impressions
+          still reset like any other new episode. Typical use: resuming
+          at the same video after giving up scrolling (``max_suggestions``
+          exhausted) instead of jumping to an unrelated random item.
 
     Action (``Discrete(5 * N)``): see module docstring.
     """
@@ -164,13 +186,14 @@ class ThumbwalkEnv(gym.Env):
         self.action_space = spaces.Discrete(N_ACTION_TYPES * n_slots)
         self.observation_space = spaces.Dict(
             {
-                "seed_embedding": spaces.Box(-np.inf, np.inf, shape=(embedding_dim,), dtype=np.float32),
-                "seed_id": spaces.Box(0, n_items - 1, shape=(1,), dtype=np.int64),
+                "video_embedding": spaces.Box(-np.inf, np.inf, shape=(embedding_dim,), dtype=np.float32),
+                "video_id": spaces.Box(0, n_items - 1, shape=(1,), dtype=np.int64),
                 "slate_embeddings": spaces.Box(
                     -np.inf, np.inf, shape=(n_slots, embedding_dim), dtype=np.float32
                 ),
                 "slate_ids": spaces.Box(-1, n_items - 1, shape=(n_slots,), dtype=np.int64),
                 "slate_mask": spaces.Box(0, 1, shape=(n_slots,), dtype=np.float32),
+                "slates_used_frac": spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32),
             }
         )
 
@@ -191,15 +214,15 @@ class ThumbwalkEnv(gym.Env):
         )
 
         self._step_count = 0
-        self._current_seed_row: int = 0
+        self._current_video_row: int = 0
         self._current_slate: np.ndarray = np.full(n_slots, -1, dtype=int)
         self._history: list[HistoryEntry] = []
-        #: Rows shown in any slate for the current seed since the last
+        #: Rows shown in any slate for the current video since the last
         #: watch (including the one on screen), excluded from the next
         #: continuation so lazy loading always surfaces new items, and
         #: counted against ``max_suggestions`` (see module docstring).
         self._shown_rows_since_watch: set[int] = set()
-        #: Resolved cap on total items shown per seed before giving up.
+        #: Resolved cap on total items shown per current video before giving up.
         #: ``None`` in config means "always exactly 4 full slates".
         self.max_suggestions: int = (
             self.config.max_suggestions
@@ -216,22 +239,33 @@ class ThumbwalkEnv(gym.Env):
         self.funnel.rng = self.np_random
         self.funnel.reset_suppression()
         self._step_count = 0
-        self._history = []
         self._shown_rows_since_watch = set()
 
         options = options or {}
         if "start_row" in options:
-            self._current_seed_row = int(options["start_row"])
+            self._current_video_row = int(options["start_row"])
         else:
             # Cold start: no watch history yet, so the first slate (and its
-            # anchor seed) comes from popularity, Covington et al.'s
+            # anchor video) comes from popularity, Covington et al.'s
             # demographic-prior stand-in for new users.
             popularity_pick = self.corpus.sample_rows(
                 1, rng=self.np_random, weights=self.corpus.popularity
             )
-            self._current_seed_row = (
+            self._current_video_row = (
                 int(popularity_pick[0]) if len(popularity_pick) else int(self.np_random.integers(0, len(self.corpus)))
             )
+
+        if "start_history" in options:
+            # Continuation reset, NOT a cold start: the slate is built from
+            # this history's profile embedding (i.e. an actual neighborhood
+            # of whatever's in it), same as mid-episode, rather than from
+            # cold-start popularity -- even though suppression/impressions
+            # above still reset like any other new episode. Typical use:
+            # resuming at the same video after giving up scrolling, instead
+            # of jumping to an unrelated popularity-sampled random item.
+            self._history = [(int(row), float(fraction)) for row, fraction in options["start_history"]]
+        else:
+            self._history = []
 
         self._rebuild_slate()
         self._shown_rows_since_watch = {
@@ -252,7 +286,7 @@ class ThumbwalkEnv(gym.Env):
         item_row = int(self._current_slate[position])
         invalid = item_row == -1
 
-        seed_before = self._current_seed_row
+        video_before = self._current_video_row
         clicked_id: Optional[str] = None
         watch_fraction: Optional[float] = None
         is_watch = action_type in (ACTION_WATCH_ABANDON, ACTION_WATCH_HALF, ACTION_WATCH_FULL)
@@ -263,7 +297,7 @@ class ThumbwalkEnv(gym.Env):
         if not invalid:
             if is_watch:
                 watch_fraction = WATCH_FRACTIONS[action_type]
-                self._current_seed_row = item_row
+                self._current_video_row = item_row
                 clicked_id = self.corpus.id_at(item_row)
                 self._history.append((item_row, watch_fraction))
                 watched_row = item_row
@@ -280,8 +314,8 @@ class ThumbwalkEnv(gym.Env):
         picked_video = is_watch and not invalid
         suggestions_exhausted = False
         if picked_video:
-            # New seed: a fresh scroll session starts, with its own budget
-            # of lazy-loaded continuation items.
+            # New current video: a fresh scroll session starts, with its own
+            # budget of lazy-loaded continuation items.
             self._shown_rows_since_watch = set()
         else:
             # Nothing was selected to play this step (a negative-feedback
@@ -291,7 +325,7 @@ class ThumbwalkEnv(gym.Env):
             suggestions_exhausted = len(self._shown_rows_since_watch) >= self.max_suggestions
 
         if suggestions_exhausted:
-            # Lazy-load budget spent on this seed with nothing picked: stop
+            # Lazy-load budget spent on this video with nothing picked: stop
             # serving new slates, same as a viewer who gives up scrolling.
             pass
         else:
@@ -302,7 +336,7 @@ class ThumbwalkEnv(gym.Env):
         self._step_count += 1
 
         context = {
-            "seed_id_before": self.corpus.id_at(seed_before),
+            "video_id_before": self.corpus.id_at(video_before),
             "action": action,
             "action_type": action_type,
             "position": position,
@@ -349,12 +383,15 @@ class ThumbwalkEnv(gym.Env):
             if row != -1:
                 slate_embeddings[i] = self.corpus.embedding_by_row(int(row))
 
+        slates_used_frac = min(1.0, len(self._shown_rows_since_watch) / self.max_suggestions)
+
         return {
-            "seed_embedding": self.corpus.embedding_by_row(self._current_seed_row).astype(np.float32),
-            "seed_id": np.array([self._current_seed_row], dtype=np.int64),
+            "video_embedding": self.corpus.embedding_by_row(self._current_video_row).astype(np.float32),
+            "video_id": np.array([self._current_video_row], dtype=np.int64),
             "slate_embeddings": slate_embeddings,
             "slate_ids": slate_ids,
             "slate_mask": slate_mask,
+            "slates_used_frac": np.array([slates_used_frac], dtype=np.float32),
         }
 
     def _get_info(
@@ -373,9 +410,9 @@ class ThumbwalkEnv(gym.Env):
         return {
             "clicked_id": clicked_id,
             "masked_count": len(self.funnel.suppressed_rows()),
-            "current_cluster": self.corpus.cluster_of_row(self._current_seed_row),
-            "current_channel": self.corpus.channel_of_row(self._current_seed_row),
-            "seed_path": self.corpus.path_of_row(self._current_seed_row),
+            "current_cluster": self.corpus.cluster_of_row(self._current_video_row),
+            "current_channel": self.corpus.channel_of_row(self._current_video_row),
+            "video_path": self.corpus.path_of_row(self._current_video_row),
             "slate_paths": slate_paths,
             "slate_ids": slate_string_ids,
             "history_length": len(self._history),

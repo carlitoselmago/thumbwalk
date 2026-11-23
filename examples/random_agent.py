@@ -9,7 +9,7 @@ agent samples actions uniformly at random from ``Discrete(5 * slate_size)``,
 so on average 3/5 of its actions watch a slate item (with one of three
 symbolic watch times) and 2/5 mark one with negative feedback ("Not Interested" or "Don't recommend channel"). 
 Watch the printed trajectory to see the
-seed wander the k-NN/profile graph and the masked-item count grow as
+current video wander the k-NN/profile graph and the masked-item count grow as
 negative feedback accumulates.
 """
 
@@ -93,7 +93,7 @@ def describe_action(action: int, slate_size: int) -> str:
 def run_episode(env: ThumbwalkEnv, seed: int) -> None:
     slate_size = env.config.slate_size
     obs, info = env.reset(seed=seed)
-    print(f"step  0  reset -> seed={info['seed_path']} cluster={info['current_cluster']}")
+    print(f"step  0  reset -> video={info['video_path']} cluster={info['current_cluster']}")
 
     step = 0
     while True:

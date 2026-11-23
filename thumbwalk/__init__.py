@@ -2,7 +2,7 @@
 
 Unlike RecSim (Google, 2019) and SARDINE (Naver, 2024), where the learnable
 agent IS the recommender proposing slates to a simulated user, here the
-agent is the VIEWER: it sees one "playing" thumbnail (the seed) and a slate
+agent is the VIEWER: it sees one "playing" thumbnail (the current video) and a slate
 of related thumbnails produced by a fixed, non-learnable recommender, and
 chooses what to watch (with a watch-time fraction) or mark as negative
 feedback ("Not interested" / "Don't recommend channel"). This inversion is the

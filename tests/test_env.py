@@ -24,7 +24,7 @@ def test_observation_and_action_space_shapes(synthetic_corpus: Corpus) -> None:
     assert obs["slate_embeddings"].shape == (6, synthetic_corpus.embedding_dim)
     assert obs["slate_ids"].shape == (6,)
     assert obs["slate_mask"].shape == (6,)
-    assert obs["seed_embedding"].shape == (synthetic_corpus.embedding_dim,)
+    assert obs["video_embedding"].shape == (synthetic_corpus.embedding_dim,)
     assert env.observation_space.contains(obs)
 
 
@@ -43,7 +43,7 @@ def test_default_reward_is_minus_one_without_a_pick_zero_with_one(
     assert reward == 0.0
 
 
-def test_watch_action_updates_seed_and_history(synthetic_corpus: Corpus) -> None:
+def test_watch_action_updates_video_and_history(synthetic_corpus: Corpus) -> None:
     config = ThumbwalkEnvConfig(slate_size=5, k=10, horizon=5, exploration_slots=0)
     env = ThumbwalkEnv(synthetic_corpus, config)
     obs, info = env.reset(seed=0, options={"start_row": 0})
@@ -52,37 +52,37 @@ def test_watch_action_updates_seed_and_history(synthetic_corpus: Corpus) -> None
     action = ACTION_WATCH_FULL * config.slate_size + 2
     obs2, reward, terminated, truncated, info2 = env.step(action)
 
-    assert int(obs2["seed_id"][0]) == clicked_row
+    assert int(obs2["video_id"][0]) == clicked_row
     assert info2["clicked_id"] == synthetic_corpus.id_at(clicked_row)
     assert info2["watch_fraction"] == pytest.approx(1.0)
     assert info2["history_length"] == 1
 
 
-def test_not_interested_action_does_not_change_seed(synthetic_corpus: Corpus) -> None:
+def test_not_interested_action_does_not_change_video(synthetic_corpus: Corpus) -> None:
     config = ThumbwalkEnvConfig(slate_size=5, k=10, horizon=5, exploration_slots=0)
     env = ThumbwalkEnv(synthetic_corpus, config)
     obs, info = env.reset(seed=0, options={"start_row": 0})
-    seed_before = int(obs["seed_id"][0])
+    video_before = int(obs["video_id"][0])
 
     action = ACTION_NOT_INTERESTED * config.slate_size + 0
     obs2, reward, terminated, truncated, info2 = env.step(action)
 
-    assert int(obs2["seed_id"][0]) == seed_before
+    assert int(obs2["video_id"][0]) == video_before
     assert info2["clicked_id"] is None
     assert info2["masked_count"] > 0
     assert info2["history_length"] == 0
 
 
-def test_no_channel_action_does_not_change_seed(synthetic_corpus: Corpus) -> None:
+def test_no_channel_action_does_not_change_video(synthetic_corpus: Corpus) -> None:
     config = ThumbwalkEnvConfig(slate_size=5, k=10, horizon=5, exploration_slots=0)
     env = ThumbwalkEnv(synthetic_corpus, config)
     obs, info = env.reset(seed=0, options={"start_row": 0})
-    seed_before = int(obs["seed_id"][0])
+    video_before = int(obs["video_id"][0])
 
     action = ACTION_NO_CHANNEL * config.slate_size + 0
     obs2, reward, terminated, truncated, info2 = env.step(action)
 
-    assert int(obs2["seed_id"][0]) == seed_before
+    assert int(obs2["video_id"][0]) == video_before
     assert info2["clicked_id"] is None
 
 
@@ -133,7 +133,7 @@ def test_reset_seed_determinism(synthetic_corpus: Corpus) -> None:
 
     obs1, _ = env1.reset(seed=123)
     obs2, _ = env2.reset(seed=123)
-    np.testing.assert_array_equal(obs1["seed_id"], obs2["seed_id"])
+    np.testing.assert_array_equal(obs1["video_id"], obs2["video_id"])
     np.testing.assert_array_equal(obs1["slate_ids"], obs2["slate_ids"])
 
     for raw_action in [0, 2, 7, 1, 3, 9, 4]:
@@ -222,7 +222,7 @@ def test_watching_resets_the_max_suggestions_budget(synthetic_corpus: Corpus) ->
     clicked_row = int(obs["slate_ids"][1])
     action = ACTION_WATCH_FULL * config.slate_size + 1
     obs, reward, terminated, truncated, info = env.step(action)
-    assert int(obs["seed_id"][0]) == clicked_row
+    assert int(obs["video_id"][0]) == clicked_row
     assert info["suggestions_shown_since_watch"] == 5
     assert truncated is False
 
@@ -250,3 +250,41 @@ def test_max_suggestions_defaults_to_four_full_slates(synthetic_corpus: Corpus) 
     _, _, _, truncated, info = env.step(action)
     assert truncated is True
     assert info["suggestions_exhausted"] is True
+
+
+def test_cold_start_row_without_history_still_builds_from_popularity(
+    synthetic_corpus: Corpus,
+) -> None:
+    """``start_row`` alone (no ``start_history``) is still a cold start:
+    it only pins the exposed current video, the slate is popularity-driven."""
+    config = ThumbwalkEnvConfig(slate_size=5, k=5, horizon=10, exploration_slots=0)
+    env = ThumbwalkEnv(synthetic_corpus, config)
+    obs, info = env.reset(seed=0, options={"start_row": 3})
+
+    assert int(obs["video_id"][0]) == 3
+    assert info["history_length"] == 0
+
+
+def test_start_history_makes_a_continuation_not_a_cold_start(synthetic_corpus: Corpus) -> None:
+    """``start_history`` seeds a real profile, so the slate reflects that
+    item's neighborhood instead of popularity -- and it shows up as
+    ``history_length`` > 0 even though this is a fresh ``reset()``."""
+    config = ThumbwalkEnvConfig(slate_size=5, k=5, horizon=10, exploration_slots=0)
+    env = ThumbwalkEnv(synthetic_corpus, config)
+
+    # A cold reset anchored at row 3, for comparison.
+    cold_obs, _ = env.reset(seed=0, options={"start_row": 3})
+    cold_slate = set(int(r) for r in cold_obs["slate_ids"] if r != -1)
+
+    # A continuation reset at the SAME row, via start_history.
+    obs, info = env.reset(seed=1, options={"start_row": 3, "start_history": [(3, 1.0)]})
+    assert int(obs["video_id"][0]) == 3
+    assert info["history_length"] == 1
+
+    # The continuation's slate should be row 3's actual k-NN neighborhood,
+    # which (on this planted-cluster fixture) differs from a popularity
+    # cold start's slate.
+    neighbor_rows, _ = synthetic_corpus.kneighbors(3, k=config.slate_size)
+    continuation_slate = set(int(r) for r in obs["slate_ids"] if r != -1)
+    assert continuation_slate <= set(int(r) for r in neighbor_rows) | {3}
+    assert continuation_slate != cold_slate

@@ -225,7 +225,7 @@ class Corpus:
         Unlike :meth:`kneighbors`, ``embedding`` need not be one of the
         corpus's own rows — used to retrieve candidates around a *profile*
         vector (e.g. a weighted average of recently watched items) rather
-        than a single seed item. ``exclude`` optionally drops specific rows
+        than a single video. ``exclude`` optionally drops specific rows
         (e.g. the row the vector was itself computed from).
         """
         exclude = exclude or set()

@@ -12,7 +12,7 @@ maximize engagement.
 
 `thumbwalk` flips this. The recommender is a **fixed, non-learnable two-stage funnel** — part
 of the environment's dynamics, like physics in a robotics sim. The learnable agent is the
-**viewer**: on every step it sees one "playing" thumbnail (the current seed) plus a slate of
+**viewer**: on every step it sees one "playing" thumbnail (the current video) plus a slate of
 related thumbnails, and takes exactly one of **5 x slate_size** actions (see "Action space"
 below). You train agents that model *how people watch*, not how to recommend to them.
 
@@ -103,7 +103,7 @@ python examples/random_agent.py
 
 This runs a uniform-random VIEWER policy for one episode and prints each step: the action
 taken (watch with a time fraction, "No me interesa", or "No recomendar canal", and which slate
-position), the resulting seed, the running count of suppressed items, and the reward.
+position), the resulting current video, the running count of suppressed items, and the reward.
 
 ### 3. Use it in your own training loop
 
@@ -114,7 +114,7 @@ from thumbwalk.env import ThumbwalkEnv, ThumbwalkEnvConfig
 corpus = Corpus.load("corpus/")
 
 def my_reward_fn(context: dict) -> float:
-    # context: seed_id_before, action, action_type, position, clicked_id,
+    # context: video_id_before, action, action_type, position, clicked_id,
     #          watch_fraction, is_watch, is_not_interested, is_no_channel,
     #          invalid_action, masked_count
     return 1.0 if context["is_watch"] else 0.0
@@ -145,7 +145,7 @@ engagement, regret, fairness...).
 On every step the viewer takes exactly **one** decision among `Discrete(5 * slate_size)`
 actions, encoding a slate position `k` and an action type `j` as `a = j * slate_size + k`:
 
-| `j` | Action | Changes seed? | Effect |
+| `j` | Action | Changes current video? | Effect |
 |---|---|---|---|
 | 0 | watch, abandon | yes -> `slate[k]` | implicit signal, watch_fraction=0.0 |
 | 1 | watch, half | yes -> `slate[k]` | implicit signal, watch_fraction=0.5 |
@@ -162,11 +162,14 @@ watching does, so it has a real opportunity cost instead of being free to spam.
 
 ## Observation space
 
-- **Observation** (`gymnasium.spaces.Dict`): `seed_embedding`, `seed_id`, `slate_embeddings`
-  (shape `(N, D)`), `slate_ids`, and `slate_mask` (1.0 = real item, 0.0 = padding if the
-  recommender's reachable pool has shrunk below the slate size). Only embeddings and integer
-  ids are in the observation, so the env is fully usable headless; image paths and string ids
-  are available in `info` for a renderer.
+- **Observation** (`gymnasium.spaces.Dict`): `video_embedding`, `video_id`, `slate_embeddings`
+  (shape `(N, D)`), `slate_ids`, `slate_mask` (1.0 = real item, 0.0 = padding if the
+  recommender's reachable pool has shrunk below the slate size), and `slates_used_frac`
+  (`[0, 1]`, how much of the current scroll session's `max_suggestions` lazy-load budget has
+  been spent since the last watch — the only way a policy can perceive it's about to be
+  truncated for not picking anything, since `info`'s raw count isn't fed to a policy network).
+  Only embeddings and integer ids are in the observation, so the env is fully usable headless;
+  image paths and string ids are available in `info` for a renderer.
 - **Action** (`Discrete(5 * N)`): see table above.
 
 ## Running the tests
